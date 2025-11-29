@@ -1,0 +1,261 @@
+#!/bin/bash
+
+# Shelly - A simple CLI tool for interacting with local LLM via Ollama
+# Usage: shelly "your prompt here"
+
+VERSION="1.0.0"
+CONFIG_FILE="${HOME}/.shelly/config"
+OLLAMA_HOST="${SHELLY_HOST:-http://localhost:11434}"
+
+# Load model from config file or use environment variable
+if [ -f "$CONFIG_FILE" ]; then
+    OLLAMA_MODEL=$(cat "$CONFIG_FILE")
+else
+    OLLAMA_MODEL="${SHELLY_MODEL:-}"
+fi
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Check if Ollama is installed
+check_ollama_installed() {
+    if ! command -v ollama &> /dev/null; then
+        echo -e "${RED}Error: Ollama is not installed.${NC}\n"
+        echo -e "${YELLOW}To install Ollama:${NC}"
+        echo -e "  ${BLUE}curl -fsSL https://ollama.com/install.sh | sh${NC}\n"
+        echo -e "${YELLOW}After installation, pull the recommended model:${NC}"
+        echo -e "  ${BLUE}ollama pull llama3.2${NC}\n"
+        echo -e "${YELLOW}Or visit: https://ollama.com${NC}"
+        exit 1
+    fi
+}
+
+# Check if Ollama service is running
+check_ollama_running() {
+    if ! curl -s "${OLLAMA_HOST}/api/tags" &> /dev/null; then
+        echo -e "${RED}Error: Ollama service is not running.${NC}\n"
+        echo -e "${YELLOW}Start Ollama with:${NC}"
+        echo -e "  ${BLUE}ollama serve${NC}\n"
+        exit 1
+    fi
+}
+
+# Get available models
+get_available_models() {
+    curl -s "${OLLAMA_HOST}/api/tags" | grep -o "\"name\":\"[^\"]*\"" | cut -d'"' -f4
+}
+
+# Select model interactively
+select_model() {
+    local models=$(get_available_models)
+
+    if [ -z "$models" ]; then
+        echo -e "${RED}Error: No models available.${NC}\n"
+        echo -e "${YELLOW}Pull a model first:${NC}"
+        echo -e "  ${BLUE}ollama pull llama3.2${NC}"
+        echo -e "  ${BLUE}ollama pull qwen2.5-coder${NC}\n"
+        exit 1
+    fi
+
+    # Convert models to array
+    local model_array=()
+    while IFS= read -r model; do
+        model_array+=("$model")
+    done <<< "$models"
+
+    local num_models=${#model_array[@]}
+    local selected=0
+
+    # Function to draw menu
+    draw_menu() {
+        clear
+        echo -e "${YELLOW}Select a model (use ↑/↓ arrows, Enter to confirm):${NC}\n"
+
+        for i in "${!model_array[@]}"; do
+            if [ $i -eq $selected ]; then
+                echo -e "  ${GREEN}▶ ${model_array[$i]}${NC}"
+            else
+                echo -e "    ${model_array[$i]}"
+            fi
+        done
+    }
+
+    # Initial draw
+    draw_menu
+
+    # Read arrow keys
+    while true; do
+        read -rsn1 key
+
+        # Handle Enter key
+        if [[ $key == "" ]]; then
+            break
+        fi
+
+        # Handle arrow keys (read next 2 chars for escape sequences)
+        if [[ $key == $'\x1b' ]]; then
+            read -rsn2 key
+            case $key in
+                '[A') # Up arrow
+                    ((selected--))
+                    if [ $selected -lt 0 ]; then
+                        selected=$((num_models - 1))
+                    fi
+                    draw_menu
+                    ;;
+                '[B') # Down arrow
+                    ((selected++))
+                    if [ $selected -ge $num_models ]; then
+                        selected=0
+                    fi
+                    draw_menu
+                    ;;
+            esac
+        fi
+    done
+
+    # Save selection
+    local selected_model="${model_array[$selected]}"
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    echo "$selected_model" > "$CONFIG_FILE"
+
+    clear
+    echo -e "${GREEN}✓ Model set to: ${selected_model}${NC}\n"
+    OLLAMA_MODEL="$selected_model"
+}
+
+# Check if the model is available
+check_model_available() {
+    # If no model is configured, prompt user to select one
+    if [ -z "$OLLAMA_MODEL" ]; then
+        echo -e "${YELLOW}No model configured. Please select a model:${NC}\n"
+        select_model
+        return
+    fi
+
+    local models=$(get_available_models)
+
+    if ! echo "$models" | grep -q "^${OLLAMA_MODEL}"; then
+        echo -e "${RED}Error: Model '${OLLAMA_MODEL}' is not available.${NC}\n"
+        echo -e "${YELLOW}Available models:${NC}"
+        echo "$models" | sed 's/^/  /'
+        echo ""
+        echo -e "${YELLOW}Pull the model with:${NC}"
+        echo -e "  ${BLUE}ollama pull ${OLLAMA_MODEL}${NC}"
+        echo -e "\n${YELLOW}Or select a different model:${NC}"
+        echo -e "  ${BLUE}shelly --model${NC}\n"
+        exit 1
+    fi
+}
+
+# Send prompt to Ollama
+query_ollama() {
+    local prompt="$1"
+    local context="$2"
+
+    # Build the system prompt for shell assistance
+    local system_prompt="You are Shelly, a helpful command-line assistant. Provide concise, accurate answers. When suggesting shell commands, format them clearly. Be direct and practical."
+
+    # Add context if available (like previous command error)
+    if [ -n "$context" ]; then
+        system_prompt="${system_prompt}\n\nContext: ${context}"
+    fi
+
+    local json_payload=$(jq -n \
+        --arg model "$OLLAMA_MODEL" \
+        --arg system "$system_prompt" \
+        --arg prompt "$prompt" \
+        '{
+            model: $model,
+            prompt: $prompt,
+            system: $system,
+            stream: false
+        }')
+
+    local response=$(curl -s -X POST "${OLLAMA_HOST}/api/generate" \
+        -H "Content-Type: application/json" \
+        -d "$json_payload")
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Error: Failed to connect to Ollama${NC}"
+        exit 1
+    fi
+
+    echo "$response" | jq -r '.response'
+}
+
+# Main function
+main() {
+    # Check for help flag
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+        echo "Shelly v${VERSION} - AI-powered shell assistant"
+        echo ""
+        echo "Usage:"
+        echo "  shelly \"your question or prompt\""
+        echo "  shelly --model              Select or change the model"
+        echo "  shelly --show-model         Show current model"
+        echo ""
+        echo "Examples:"
+        echo "  shelly \"what's the command for listing AWS S3 buckets?\""
+        echo "  shelly \"how do I find large files in current directory?\""
+        echo "  shelly \"revise this message: hey man whats up\""
+        echo ""
+        echo "Configuration (environment variables):"
+        echo "  SHELLY_MODEL    - Override configured model"
+        echo "  SHELLY_HOST     - Ollama API host (default: http://localhost:11434)"
+        echo ""
+        exit 0
+    fi
+
+    # Check for version flag
+    if [ "$1" = "-v" ] || [ "$1" = "--version" ]; then
+        echo "Shelly v${VERSION}"
+        exit 0
+    fi
+
+    # Check for model selection flag
+    if [ "$1" = "--model" ] || [ "$1" = "-m" ]; then
+        check_ollama_installed
+        check_ollama_running
+        select_model
+        exit 0
+    fi
+
+    # Check for show model flag
+    if [ "$1" = "--show-model" ]; then
+        if [ -n "$OLLAMA_MODEL" ]; then
+            echo -e "${GREEN}Current model: ${OLLAMA_MODEL}${NC}"
+        else
+            echo -e "${YELLOW}No model configured${NC}"
+            echo -e "Run: ${BLUE}shelly --model${NC} to select one"
+        fi
+        exit 0
+    fi
+
+    # Require a prompt
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: No prompt provided${NC}"
+        echo "Usage: shelly \"your question or prompt\""
+        echo "Try: shelly --help"
+        exit 1
+    fi
+
+    # Perform checks
+    check_ollama_installed
+    check_ollama_running
+    check_model_available
+
+    # Get the user's prompt
+    local user_prompt="$*"
+
+    # Query Ollama
+    echo -e "${BLUE}Thinking...${NC}\n"
+    query_ollama "$user_prompt"
+}
+
+# Run main function
+main "$@"

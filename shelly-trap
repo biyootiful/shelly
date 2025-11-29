@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# Shelly Trap - Auto-catch command errors and provide helpful suggestions
+# This can be sourced in your .zshrc or .bashrc to enable automatic error catching
+
+shelly_command_not_found_handler() {
+    local cmd="$1"
+    shift
+    local args="$@"
+
+    echo -e "\033[0;31mCommand not found: ${cmd}${NC}\033[0m"
+    echo ""
+
+    if command -v shelly &> /dev/null; then
+        echo -e "\033[1;33mAsking Shelly for help...${NC}\033[0m\n"
+        shelly "I tried to run the command '${cmd} ${args}' but it was not found. What command should I use instead? Be concise and suggest the correct command."
+    else
+        echo "Tip: Install Shelly for AI-powered command suggestions!"
+        echo "  curl -fsSL https://raw.githubusercontent.com/yourusername/shelly/main/install.sh | bash"
+    fi
+
+    return 127
+}
+
+# For Zsh
+if [ -n "$ZSH_VERSION" ]; then
+    command_not_found_handler() {
+        shelly_command_not_found_handler "$@"
+    }
+fi
+
+# For Bash
+if [ -n "$BASH_VERSION" ]; then
+    command_not_found_handle() {
+        shelly_command_not_found_handler "$@"
+    }
+fi
+
+# Function to catch last command error
+shelly_catch() {
+    local last_exit_code=$?
+    local last_command=$(fc -ln -1)
+
+    if [ $last_exit_code -ne 0 ]; then
+        echo -e "\033[0;31mLast command failed with exit code: ${last_exit_code}${NC}\033[0m"
+        echo -e "\033[1;33mAsking Shelly for help...${NC}\033[0m\n"
+
+        if command -v shelly &> /dev/null; then
+            shelly "This command failed: '${last_command}' with exit code ${last_exit_code}. What went wrong and how do I fix it? Be concise."
+        fi
+    fi
+}
+
+# Alias for quick access
+alias shelp='shelly_catch'
