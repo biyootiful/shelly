@@ -1,6 +1,14 @@
 # Shelly
 
-A simple, powerful CLI tool that pipes your questions directly to a local LLM via Ollama. Get instant help with commands, error debugging, and general questions - right from your terminal.
+A simple, powerful CLI tool that pipes your questions directly to a **local LLM** via Ollama. Get instant help with commands, error debugging, and general questions - right from your terminal.
+
+**Why local?** Built as a privacy-focused alternative to cloud-based AI assistants (like Warp's AI features). Your data stays on your machine, no API keys required, and it works completely offline once models are downloaded.
+
+## Demo
+
+![Shelly model selection and basic usage](demo/demo1.gif)
+
+![Shelly command assistance](demo/demo2.gif)
 
 ## Features
 
