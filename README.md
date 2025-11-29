@@ -30,7 +30,7 @@ ollama pull qwen2.5-coder
 ### Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/shelly/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/biyootiful/shelly/main/install.sh | bash
 ```
 
 The installer will:

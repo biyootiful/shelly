@@ -7,7 +7,7 @@ set -e
 
 INSTALL_DIR="${SHELLY_INSTALL_DIR:-$HOME/.shelly}"
 BIN_DIR="${HOME}/.local/bin"
-REPO_URL="https://raw.githubusercontent.com/yourusername/shelly/main"
+REPO_URL="https://raw.githubusercontent.com/biyootiful/shelly/main"
 
 # Colors
 RED='\033[0;31m'
