@@ -161,10 +161,8 @@ add_to_session() {
     local role="$1"
     local content="$2"
 
-    local escaped_content=$(echo "$content" | jq -Rs '.')
-
-    local updated=$(jq --arg role "$role" --argjson content "$escaped_content" \
-        '.messages += [{"role": $role, "content": ($content | fromjson)}]' "$SESSION_FILE")
+    local updated=$(jq --arg role "$role" --arg content "$content" \
+        '.messages += [{"role": $role, "content": $content}]' "$SESSION_FILE")
 
     echo "$updated" > "$SESSION_FILE"
 }
