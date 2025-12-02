@@ -161,15 +161,22 @@ add_to_session() {
     local role="$1"
     local content="$2"
 
+    # Validate session file before modifying
+    if ! jq empty "$SESSION_FILE" 2>/dev/null; then
+        echo '{"messages":[]}' > "$SESSION_FILE"
+    fi
+
     local updated=$(jq --arg role "$role" --arg content "$content" \
         '.messages += [{"role": $role, "content": $content}]' "$SESSION_FILE")
 
-    echo "$updated" > "$SESSION_FILE"
+    if [ -n "$updated" ]; then
+        echo "$updated" > "$SESSION_FILE"
+    fi
 }
 
 # Get messages from session
 get_session_messages() {
-    if [ -f "$SESSION_FILE" ]; then
+    if [ -f "$SESSION_FILE" ] && jq empty "$SESSION_FILE" 2>/dev/null; then
         jq -c '.messages' "$SESSION_FILE"
     else
         echo '[]'
