@@ -3,8 +3,10 @@
 # Shelly - A simple CLI tool for interacting with local LLM via Ollama
 # Usage: shelly "your prompt here"
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 CONFIG_FILE="${HOME}/.shelly/config"
+SESSION_FILE="${HOME}/.shelly/session.json"
+SESSION_TIMEOUT=1800  # 30 minutes in seconds
 OLLAMA_HOST="${SHELLY_HOST:-http://localhost:11434}"
 
 # Load model from config file or use environment variable
@@ -128,6 +130,54 @@ select_model() {
     OLLAMA_MODEL="$selected_model"
 }
 
+# Initialize or load session
+init_session() {
+    mkdir -p "$(dirname "$SESSION_FILE")"
+
+    # Check if session file exists and is not expired
+    if [ -f "$SESSION_FILE" ]; then
+        local last_modified=$(stat -f %m "$SESSION_FILE" 2>/dev/null || stat -c %Y "$SESSION_FILE" 2>/dev/null)
+        local current_time=$(date +%s)
+        local age=$((current_time - last_modified))
+
+        if [ $age -gt $SESSION_TIMEOUT ]; then
+            # Session expired, start fresh
+            echo '{"messages":[]}' > "$SESSION_FILE"
+        fi
+    else
+        # No session file, create one
+        echo '{"messages":[]}' > "$SESSION_FILE"
+    fi
+}
+
+# Clear session and start fresh
+clear_session() {
+    echo '{"messages":[]}' > "$SESSION_FILE"
+    echo -e "${GREEN}✓ Session cleared. Starting fresh conversation.${NC}"
+}
+
+# Add message to session history
+add_to_session() {
+    local role="$1"
+    local content="$2"
+
+    local escaped_content=$(echo "$content" | jq -Rs '.')
+
+    local updated=$(jq --arg role "$role" --argjson content "$escaped_content" \
+        '.messages += [{"role": $role, "content": ($content | fromjson)}]' "$SESSION_FILE")
+
+    echo "$updated" > "$SESSION_FILE"
+}
+
+# Get messages from session
+get_session_messages() {
+    if [ -f "$SESSION_FILE" ]; then
+        jq -c '.messages' "$SESSION_FILE"
+    else
+        echo '[]'
+    fi
+}
+
 # Check if the model is available
 check_model_available() {
     # If no model is configured, prompt user to select one
@@ -152,7 +202,7 @@ check_model_available() {
     fi
 }
 
-# Send prompt to Ollama
+# Send prompt to Ollama using chat API (supports conversation history)
 query_ollama() {
     local prompt="$1"
     local context="$2"
@@ -165,18 +215,29 @@ query_ollama() {
         system_prompt="${system_prompt}\n\nContext: ${context}"
     fi
 
+    # Get existing messages from session
+    local existing_messages=$(get_session_messages)
+
+    # Add current user message to session
+    add_to_session "user" "$prompt"
+
+    # Build messages array with system prompt + history + new message
+    local messages=$(jq -n \
+        --arg system "$system_prompt" \
+        --argjson history "$existing_messages" \
+        --arg prompt "$prompt" \
+        '[{"role": "system", "content": $system}] + $history + [{"role": "user", "content": $prompt}]')
+
     local json_payload=$(jq -n \
         --arg model "$OLLAMA_MODEL" \
-        --arg system "$system_prompt" \
-        --arg prompt "$prompt" \
+        --argjson messages "$messages" \
         '{
             model: $model,
-            prompt: $prompt,
-            system: $system,
+            messages: $messages,
             stream: false
         }')
 
-    local response=$(curl -s -X POST "${OLLAMA_HOST}/api/generate" \
+    local response=$(curl -s -X POST "${OLLAMA_HOST}/api/chat" \
         -H "Content-Type: application/json" \
         -d "$json_payload")
 
@@ -185,7 +246,12 @@ query_ollama() {
         exit 1
     fi
 
-    echo "$response" | jq -r '.response'
+    local assistant_response=$(echo "$response" | jq -r '.message.content')
+
+    # Save assistant response to session
+    add_to_session "assistant" "$assistant_response"
+
+    echo "$assistant_response"
 }
 
 # Main function
@@ -198,11 +264,18 @@ main() {
         echo "  shelly \"your question or prompt\""
         echo "  shelly --model              Select or change the model"
         echo "  shelly --show-model         Show current model"
+        echo "  shelly --new, -n            Start a new conversation session"
+        echo "  shelly --new \"prompt\"       Clear session and ask new question"
+        echo ""
+        echo "Session:"
+        echo "  Shelly remembers your conversation for 30 minutes."
+        echo "  Use --new to start fresh if context becomes irrelevant."
         echo ""
         echo "Examples:"
         echo "  shelly \"what's the command for listing AWS S3 buckets?\""
         echo "  shelly \"how do I find large files in current directory?\""
         echo "  shelly \"revise this message: hey man whats up\""
+        echo "  shelly \"no, make it more formal\"   # follows up on previous"
         echo ""
         echo "Configuration (environment variables):"
         echo "  SHELLY_MODEL    - Override configured model"
@@ -236,6 +309,16 @@ main() {
         exit 0
     fi
 
+    # Check for new session flag
+    if [ "$1" = "--new" ] || [ "$1" = "-n" ]; then
+        clear_session
+        shift
+        # If there's a prompt after --new, continue to process it
+        if [ -z "$1" ]; then
+            exit 0
+        fi
+    fi
+
     # Require a prompt
     if [ -z "$1" ]; then
         echo -e "${RED}Error: No prompt provided${NC}"
@@ -248,6 +331,9 @@ main() {
     check_ollama_installed
     check_ollama_running
     check_model_available
+
+    # Initialize session (loads existing or creates new if expired)
+    init_session
 
     # Get the user's prompt
     local user_prompt="$*"
